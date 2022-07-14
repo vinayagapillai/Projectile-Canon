@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.SceneManagement;
 
 public class CanonController : MonoBehaviour
@@ -11,42 +12,63 @@ public class CanonController : MonoBehaviour
     public float MaxAngleX = 50;
     public float MaxAngleY = 20;
 
-    private GameObject _canon;
+    public float BallVelocity;
+    public float LinePoints = 25;
+    public float TimeBetweenPoints = 0.1f;
+
     public GameObject BallPrefab;
     public Transform FirePoint;
+    private Rigidbody BallPrefabRb;
 
-    public float BallVelocity;
+    public Transform TargetDecal;
 
-    public LineRenderer lineRenderer;
-    public int lineRendPosCount;
-    public LayerMask BallLayer;
+    private LineRenderer _line;
+
+    public LayerMask ObstraclesLayerMask;
+
+    private BallPool _pool;
+
+    private CanonInput _canonInput;
+    private InputAction _moveInput;
+    private InputAction _fireInput;
+    private Vector2 _input;
 
 
-    public Scene _simulationScene;
-    PhysicsScene _physicsScene;
-    void Start()
+    private void Awake()
     {
-        _canon = transform.GetChild(0).gameObject;
-        lineRenderer.positionCount = 10;
-        //_simulationScene = SceneManager.GetActiveScene();
-        //_physicsScene = _simulationScene.GetPhysicsScene();
-        
+        _canonInput = new CanonInput();
+    }
+
+    private void OnEnable()
+    {
+        _moveInput = _canonInput.Player.Move;
+        _moveInput.Enable();
+
+        _fireInput = _canonInput.Player.Fire;
+        _fireInput.Enable();
+        _fireInput.performed += ShootCanon;
+    }
+
+    private void OnDisable()
+    {
+        _moveInput.Disable();
+        _fireInput.Disable();
+    }
+
+    private void Start()
+    {
+        _line = GetComponent<LineRenderer>();
+        BallPrefabRb = BallPrefab.GetComponent<Rigidbody>();
+        _pool = GetComponent<BallPool>();
+
     }
 
     void Update()
     {
-        float inputX = Input.GetAxis("Horizontal");
-        float inputY = Input.GetAxis("Vertical");
-        CalculateCanonRotation(inputX, inputY);
+        _input = _moveInput.ReadValue<Vector2>();
+        CalculateCanonRotation(_input.x, _input.y);
 
-        if (Input.GetMouseButtonDown(0))
-        {
-            ShootCanon();
-        }
-
-        //SimulateTrajectory(BallPrefab, FirePoint.position, FirePoint.forward * BallVelocity);
-        DrawLineRenderer();
-
+        DrawProjection();
     }
 
     private void CalculateCanonRotation(float inputX, float inputY)
@@ -68,59 +90,63 @@ public class CanonController : MonoBehaviour
         transform.rotation = Quaternion.Euler(rotation);
     }
 
-    private void ShootCanon()
+    public void ShootCanon(InputAction.CallbackContext context)
     {
-        GameObject ball = Instantiate(BallPrefab, FirePoint.position, Quaternion.identity);
-        ball.GetComponent<Rigidbody>().AddForce(FirePoint.forward * BallVelocity, ForceMode.Impulse);
+        if (GameManager.Instance.isMobile)
+            return;
+
+        GameObject ball = _pool.GetBallFromPool();
+        ball.transform.position = FirePoint.position;
+        ball.transform.rotation = Quaternion.identity;
+
+        Rigidbody rb = ball.GetComponent<Rigidbody>();
+        rb.AddForce(FirePoint.forward * BallVelocity, ForceMode.Impulse);
 
     }
 
-    private void ShootCanon(GameObject ball)
+    public void ShootCanon()
     {
-        ball.GetComponent<Rigidbody>().AddForce(FirePoint.forward * BallVelocity, ForceMode.Impulse);
+        GameObject ball = _pool.GetBallFromPool();
+        ball.transform.position = FirePoint.position;
+        ball.transform.rotation = Quaternion.identity;
+
+        Rigidbody rb = ball.GetComponent<Rigidbody>();
+        rb.AddForce(FirePoint.forward * BallVelocity, ForceMode.Impulse);
 
     }
 
-    float timeBetweenPoints = 0.1f;
-
-    private void DrawLineRenderer()
+    public void DrawProjection()
     {
-        lineRenderer.positionCount = lineRendPosCount;
-        Vector3 startVelocity = (FirePoint.forward * BallVelocity);
-        Vector3 startPoint = FirePoint.position;
-        List<Vector3> points = new List<Vector3>();
-        for (float t = 0; t < lineRendPosCount; t += timeBetweenPoints)
+        _line.positionCount = Mathf.CeilToInt(LinePoints / TimeBetweenPoints) + 1;
+        Vector3 startPosition = FirePoint.position;
+        Vector3 startVelocity = BallVelocity * FirePoint.forward / BallPrefabRb.mass;
+
+        int i = 0;
+        _line.SetPosition(i, startPosition);
+
+        for(float time = 0; time < LinePoints; time += TimeBetweenPoints)
         {
-            Vector3 newPoint = startPoint + t * startVelocity;
+            i++;
+            Vector3 point = startPosition + (startVelocity * time);
+            point.y = startPosition.y + (startVelocity.y * time) + (Physics.gravity.y / 2f * time * time);
+            _line.SetPosition(i, point);
 
-            //y = initialpoint + (initialVelocity * time) - (1/2) *g*t*t
-            newPoint.y = startPoint.y + (startVelocity.y * t) + (Physics.gravity.y / 2f * t * t);
-            points.Add(newPoint);
+            Vector3 lastPostion = _line.GetPosition(i - 1);
 
-            //if(Physics.OverlapSphere(newPoint, 2, ~BallLayer).Length > 0)
-            //{
-            //    lineRenderer.positionCount = points.Count;
-            //    break;
-            //}
+            if(Physics.Raycast(lastPostion, (point - lastPostion).normalized, out RaycastHit hit, (point - lastPostion).magnitude, ObstraclesLayerMask))
+            {
+                _line.SetPosition(i, hit.point);
+                _line.positionCount = i + 1;
+
+                TargetDecal.position = hit.point + new Vector3(-0.01f,0.01f,-0.01f);
+                TargetDecal.forward = hit.normal * -1;
+                return;
+
+            }
         }
 
-        lineRenderer.SetPositions(points.ToArray());
-
     }
-    private int _maxPhysicsFrameIterations = 100;
-    public void SimulateTrajectory(GameObject ballPrefab, Vector3 pos, Vector3 velocity)
-    {
-        var ghostObj = Instantiate(ballPrefab, pos, Quaternion.identity);
-        //SceneManager.MoveGameObjectToScene(ghostObj.gameObject, _simulationScene);
-        ShootCanon(ghostObj);
-        lineRenderer.positionCount = _maxPhysicsFrameIterations;
 
-        for (var i = 0; i < _maxPhysicsFrameIterations; i++)
-        {
-            _physicsScene.Simulate(Time.fixedDeltaTime);
-            lineRenderer.SetPosition(i, ghostObj.transform.position);
-        }
 
-        Destroy(ghostObj.gameObject);
-    }
+
 }
